@@ -1,15 +1,15 @@
 # @package _global_
 dataset:
-  coeff: 1.0
+  coeff: 2.0
 
 model:
   multi:
     optimizer:
-      learning_rate: 0.001
+      learning_rate: 0.01
     batch_size: 128
     seq_hidden_units: 16
-    br_size: 12
-    fc_hidden_units: 24
+    br_size: 8
+    fc_hidden_units: 32
     dropout_rate: 0.1
 
   self_positional_encoding:
@@ -20,5 +20,4 @@ exp:
   alpha: 0.01
   beta: 0.99
   balancing: domain_confusion
-  #max_epochs: 150
-  max_epochs: 5
+  max_epochs: 150

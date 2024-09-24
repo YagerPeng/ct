@@ -8,7 +8,8 @@ from pytorch_lightning.loggers import MLFlowLogger
 from pytorch_lightning.utilities import rank_zero_only
 from copy import deepcopy
 from typing import List
-
+import logging
+logger = logging.getLogger(__name__)
 
 def grad_reverse(x, scale=1.0):
 
@@ -52,7 +53,7 @@ def bce(treatment_pred, current_treatments, mode, weights=None):
 class BRTreatmentOutcomeHead(nn.Module):
     """Used by CRN, EDCT, MultiInputTransformer"""
 
-    def __init__(self, seq_hidden_units, br_size, fc_hidden_units, dim_treatments, dim_outcome, alpha=0.0, update_alpha=True,
+    def __init__(self, seq_hidden_units, br_size, fc_hidden_units, dim_treatments, dim_outcome, dim_iv, alpha=0.0, update_alpha=True,
                  balancing='grad_reverse'):
         super().__init__()
 
@@ -61,6 +62,7 @@ class BRTreatmentOutcomeHead(nn.Module):
         self.fc_hidden_units = fc_hidden_units
         self.dim_treatments = dim_treatments
         self.dim_outcome = dim_outcome
+        self.dim_iv = dim_iv
         self.alpha = alpha if not update_alpha else 0.0
         self.alpha_max = alpha
         self.balancing = balancing
@@ -94,6 +96,22 @@ class BRTreatmentOutcomeHead(nn.Module):
         x = self.elu3(self.linear4(x))
         outcome = self.linear5(x)
         return outcome
+
+    def my_build_treatment(self, br, iv, detached=False):
+        if detached:
+            br = br.detach()
+
+        '''if iv is not None:
+            x = torch.cat((br, iv), dim=-1) if iv is not None else br
+        else:
+            iv_placeholder = torch.zeros(br.size(0), self.dim_iv, device=br.device, dtype=br.dtype)
+            iv_placeholder = iv_placeholder.unsqueeze(1).repeat(1, br.size(1), 1)
+            x = torch.cat((br, iv_placeholder), dim=-1)'''
+
+        x = torch.cat((br, iv), dim=-1)
+        x = self.elu8(self.linear8(x))
+        treatment = self.linear9(x)  # Softmax is encapsulated into F.cross_entropy()
+        return treatment
 
     def build_br(self, seq_output):
         br = self.elu1(self.linear1(seq_output))
@@ -152,16 +170,26 @@ class AlphaRise(Callback):
 
     def on_epoch_end(self, trainer, pl_module) -> None:
         if pl_module.hparams.exp.update_alpha:
-            assert hasattr(pl_module, 'br_treatment_outcome_head')
-            p = float(pl_module.current_epoch + 1) / float(pl_module.hparams.exp.max_epochs)
-            if self.rate == 'lin':
-                pl_module.br_treatment_outcome_head.alpha = p * pl_module.br_treatment_outcome_head.alpha_max
-            elif self.rate == 'exp':
-                pl_module.br_treatment_outcome_head.alpha = \
-                    (2. / (1. + np.exp(-10. * p)) - 1.0) * pl_module.br_treatment_outcome_head.alpha_max
+            #先注释掉源代码的下面这句，让我的new_ivct模型能跑起来。。。
+            #assert hasattr(pl_module, 'br_treatment_outcome_head')
+            if hasattr(pl_module, 'br_treatment_outcome_head'):
+                p = float(pl_module.current_epoch + 1) / float(pl_module.hparams.exp.max_epochs)
+                if self.rate == 'lin':
+                    pl_module.br_treatment_outcome_head.alpha = p * pl_module.br_treatment_outcome_head.alpha_max
+                elif self.rate == 'exp':
+                    pl_module.br_treatment_outcome_head.alpha = \
+                        (2. / (1. + np.exp(-10. * p)) - 1.0) * pl_module.br_treatment_outcome_head.alpha_max
+                else:
+                    raise NotImplementedError()
             else:
-                raise NotImplementedError()
-
+                p = float(pl_module.current_epoch + 1) / float(pl_module.hparams.exp.max_epochs)
+                if self.rate == 'lin':
+                    pl_module.alpha = p * pl_module.alpha_max
+                elif self.rate == 'exp':
+                    pl_module.alpha = \
+                        (2. / (1. + np.exp(-10. * p)) - 1.0) * pl_module.alpha_max
+                else:
+                    raise NotImplementedError()
 
 def clip_normalize_stabilized_weights(stabilized_weights, active_entries, multiple_horizons=False):
     """

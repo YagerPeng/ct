@@ -114,7 +114,7 @@ class EDCT(BRCausalModel):
             self.output_dropout = nn.Dropout(self.dropout_rate)
 
             self.br_treatment_outcome_head = BRTreatmentOutcomeHead(self.seq_hidden_units, self.br_size,
-                                                                    self.fc_hidden_units, self.dim_treatments, self.dim_outcome,
+                                                                    self.fc_hidden_units, self.dim_treatments, self.dim_outcome, self.dim_iv,
                                                                     self.alpha, self.update_alpha, self.balancing)
         except MissingMandatoryValue:
             logger.warning(f"{self.model_type} not fully initialised - some mandatory args are missing! "

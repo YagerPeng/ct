@@ -29,6 +29,10 @@ class SyntheticDatasetCollection:
 
         self.autoregressive = None
         self.has_vitals = None
+        self.latent_confounder = None
+        self.latent_confounder_influence_ratio = None
+        self.chemo_iv_influence_ratio = None
+        self.radio_iv_influence_ratio = None
 
     def process_data_encoder(self):
         self.train_f.process_data(self.train_scaling_params)
@@ -76,12 +80,21 @@ class SyntheticDatasetCollection:
         Used by CT
         """
         self.train_f.process_data(self.train_scaling_params)
+        #logger.info(f'$$train_f keys: {list(self.train_f.data.keys())}')
         if hasattr(self, 'val_f') and self.val_f is not None:
             self.val_f.process_data(self.train_scaling_params)
+            #logger.info(f'$$val_f keys: {list(self.val_f.data.keys())}')
         self.test_cf_one_step.process_data(self.train_scaling_params)
+        #logger.info(f'$$test_cf_one_step keys: {list(self.test_cf_one_step.data.keys())}')
         self.test_cf_treatment_seq.process_data(self.train_scaling_params)
         self.test_cf_treatment_seq.process_sequential_test(self.projection_horizon)
         self.test_cf_treatment_seq.process_sequential_multi(self.projection_horizon)
+        #logger.info(f'$$test_cf_treatment_seq keys: {list(self.test_cf_treatment_seq.data.keys())}')
+        logging.info(f'process_data_multi ????????????????????????????????????????')
+        logger.info(f'train_f len: {len(self.train_f)}')
+        logger.info(f'val_f len: {len(self.val_f)}')
+        logger.info(f'test_cf_one_step len: {len(self.test_cf_one_step)}')
+        logger.info(f'test_cf_treatment_seq len: {len(self.test_cf_treatment_seq)}')
 
         self.processed_data_multi = True
 

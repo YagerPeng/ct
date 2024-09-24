@@ -3,14 +3,26 @@ dataset:
   coeff: 1.0
 
 model:
-  multi:
+  new_iv_multi:
     optimizer:
       learning_rate: 0.001
     batch_size: 128
+    #batch_size: 1
     seq_hidden_units: 16
     br_size: 12
     fc_hidden_units: 24
     dropout_rate: 0.1
+    dim_iv: 1
+    first_stage:
+      d_model: 4
+      num_heads: 2
+      head_size: 4
+      num_layers: 4
+    second_stage:
+      d_model: 4
+      num_heads: 2
+      head_size: 4
+      num_layers: 4
 
   self_positional_encoding:
     max_relative_position: 15
@@ -21,4 +33,4 @@ exp:
   beta: 0.99
   balancing: domain_confusion
   #max_epochs: 150
-  max_epochs: 5
+  max_epochs: 1

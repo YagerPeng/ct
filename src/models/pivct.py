@@ -16,39 +16,23 @@ import seaborn as sns
 from sklearn.manifold import TSNE
 
 from src.models.edct import EDCT
-from src.models.utils_transformer import TransformerMultiInputBlock, LayerNorm
+from src.models.utils_transformer import IVTransformerMultiInputBlock, LayerNorm
 from src.data import RealDatasetCollection, SyntheticDatasetCollection
 from src.models.utils import BRTreatmentOutcomeHead
 
 logger = logging.getLogger(__name__)
 
-
-class CT(EDCT):
-    """
-    Pytorch-Lightning implementation of Causal Transformer (CT)
-    """
-
-    model_type = 'multi'  # multi-input model
-    possible_model_types = {'multi'}
-
+class PIVCT(EDCT):
+    model_type = 'piv_multi'
+    possible_model_types = ['piv_multi']
     def __init__(self, args: DictConfig,
                  dataset_collection: Union[RealDatasetCollection, SyntheticDatasetCollection] = None,
                  autoregressive: bool = None,
                  has_vitals: bool = None,
                  projection_horizon: int = None,
                  bce_weights: np.array = None, **kwargs):
-        """
-        Args:
-            args: DictConfig of model hyperparameters
-            dataset_collection: Dataset collection
-            autoregressive: Flag of including previous outcomes to modelling
-            has_vitals: Flag of vitals in dataset
-            projection_horizon: Range of tau-step-ahead prediction (tau = projection_horizon + 1)
-            bce_weights: Re-weight BCE if used
-            **kwargs: Other arguments
-        """
         super().__init__(args, dataset_collection, autoregressive, has_vitals, bce_weights)
-
+        print("PIVCT __init__ args.model:", args.model)
         if self.dataset_collection is not None:
             self.projection_horizon = self.dataset_collection.projection_horizon
         else:
@@ -59,8 +43,8 @@ class CT(EDCT):
         logger.info(f'Max input size of {self.model_type}: {self.input_size}')
         assert self.autoregressive  # prev_outcomes are obligatory
 
-        self.basic_block_cls = TransformerMultiInputBlock
-        self._init_specific(args.model.multi)
+        self.basic_block_cls = IVTransformerMultiInputBlock
+        self._init_specific(args.model.piv_multi)
         self.save_hyperparameters(args)
 
     def _init_specific(self, sub_args: DictConfig):
@@ -70,7 +54,7 @@ class CT(EDCT):
             sub_args: sub-network hyperparameters
         """
         try:
-            super(CT, self)._init_specific(sub_args)
+            super(PIVCT, self)._init_specific(sub_args)
 
             if self.seq_hidden_units is None or self.br_size is None or self.fc_hidden_units is None \
                     or self.dropout_rate is None:
@@ -82,8 +66,10 @@ class CT(EDCT):
             self.vitals_input_transformation = nn.Linear(self.dim_vitals, self.seq_hidden_units) if self.has_vitals else None
             self.outputs_input_transformation = nn.Linear(self.dim_outcome, self.seq_hidden_units)
             self.static_input_transformation = nn.Linear(self.dim_static_features, self.seq_hidden_units)
+            self.chemo_iv_input_transformation = nn.Linear(1, self.seq_hidden_units)  #应该几维的？
+            self.radio_iv_input_transformation = nn.Linear(1, self.seq_hidden_units)  #应该几维的？
 
-            self.n_inputs = 3 if self.has_vitals else 2  # prev_outcomes and prev_treatments
+            self.n_inputs = 5 if self.has_vitals else 4  # prev_outcomes and prev_treatments
 
             self.transformer_blocks = nn.ModuleList(
                 [self.basic_block_cls(self.seq_hidden_units, self.num_heads, self.head_size, self.seq_hidden_units * 4,
@@ -96,7 +82,7 @@ class CT(EDCT):
                                       isolate_subnetwork=sub_args.isolate_subnetwork) for _ in range(self.num_layer)])
 
             self.br_treatment_outcome_head = BRTreatmentOutcomeHead(self.seq_hidden_units, self.br_size,
-                                                                    self.fc_hidden_units, self.dim_treatments, self.dim_outcome, self.dim_iv,
+                                                                    self.fc_hidden_units, self.dim_treatments, self.dim_outcome,
                                                                     self.alpha, self.update_alpha, self.balancing)
 
             # self.last_layer_norm = LayerNorm(self.seq_hidden_units)
@@ -113,16 +99,15 @@ class CT(EDCT):
     def print_batch_shapes(self, batch):
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
-                logger.debug(f"{key}: &&& {value.shape}")
+                logger.info(f"{key}: {value.shape}")
             else:
-                logger.debug(f"{key}: type-> {type(value)}")
-
+                logger.info(f"{key}: type-> {type(value)}")
     def forward(self, batch, detach_treatment=False):
-        logger.debug(f'ct forward in class: {self.__class__.__name__}')
-        #self.print_batch_shapes(batch)
+        logger.info(f'pivct forward-----------------------')
+        self.print_batch_shapes(batch)
         fixed_split = batch['future_past_split'] if 'future_past_split' in batch else None
 
-        if self.training and self.hparams.model.multi.augment_with_masked_vitals and self.has_vitals:
+        if self.training and self.hparams.model.piv_multi.augment_with_masked_vitals and self.has_vitals:
             # Augmenting original batch with vitals-masked copy
             assert fixed_split is None  # Only for training data
             fixed_split = torch.empty((2 * len(batch['active_entries']),)).type_as(batch['active_entries'])
@@ -139,17 +124,31 @@ class CT(EDCT):
         static_features = batch['static_features']
         curr_treatments = batch['current_treatments']
         active_entries = batch['active_entries']
+        chemo_iv = batch['chemo_iv']
+        radio_iv = batch['radio_iv']
 
-        br = self.build_br(prev_treatments, vitals, prev_outputs, static_features, active_entries, fixed_split)
+        '''
+        logger.info(f'prev_treatment shape: {prev_treatments.shape}.')
+        if vitals is not None:
+            logger.info(f'vitals shape: {vitals.shape}.')
+        else:
+            logger.info(f'vitals is None')
+        logger.info(f'prev_outputs shape: {prev_outputs.shape}.')
+        logger.info(f'static_features shape: {static_features.shape}.')
+        logger.info(f'curr_treatments shape: {curr_treatments.shape}.')
+        logger.info(f'active_entries shape: {active_entries.shape}.')
+        logger.info(f'chemo_iv shape: {chemo_iv.shape}.')
+        logger.info(f'radio_iv shape: {radio_iv.shape}.')
+        '''
+        br = self.build_br(prev_treatments, vitals, prev_outputs, static_features, active_entries, chemo_iv, radio_iv, fixed_split)
         treatment_pred = self.br_treatment_outcome_head.build_treatment(br, detach_treatment)
-        logger.info(f'treatment pred: {treatment_pred}0000-------------------')
-        logger.info(f'curr_treatments: {curr_treatments}$$$$$$$$$$$$$$$$$$$$')
         outcome_pred = self.br_treatment_outcome_head.build_outcome(br, curr_treatments)
 
-        #logger.info(f'treatment_pred shape: {treatment_pred.shape}, outcome_pred shape: {outcome_pred.shape}, br shape: {br.shape}.')
+        logger.info(f'treatment_pred shape: {treatment_pred.shape}, outcome_pred shape: {outcome_pred.shape}, br shape: {br.shape}.')
+        logger.info(f'pivct forward end-----------------------')
         return treatment_pred, outcome_pred, br
 
-    def build_br(self, prev_treatments, vitals, prev_outputs, static_features, active_entries, fixed_split):
+    def build_br(self, prev_treatments, vitals, prev_outputs, static_features, active_entries, chemo_iv, radio_iv, fixed_split):
 
         active_entries_treat_outcomes = torch.clone(active_entries)
         active_entries_vitals = torch.clone(active_entries)
@@ -165,6 +164,19 @@ class CT(EDCT):
         x_o = self.outputs_input_transformation(prev_outputs)
         x_v = self.vitals_input_transformation(vitals) if self.has_vitals else None
         x_s = self.static_input_transformation(static_features.unsqueeze(1))  # .expand(-1, x_t.size(1), -1)
+        x_chemo_iv = self.chemo_iv_input_transformation(chemo_iv)
+        x_radio_iv = self.radio_iv_input_transformation(radio_iv)
+        logger.info(f'build_brrrrrrrrrrrrrrrrrrrrrrrrrrrr')
+        logger.info(f'prev_treatments.shape: {prev_treatments.shape}, x_t.shape: {x_t.shape}.')
+        logger.info(f'prev_outputs.shape: {prev_outputs.shape}, x_o.shape: {x_o.shape}')
+        if x_v is not None:
+            logger.info(f' vitals.shape: {vitals.shape}, x_v.shape: {x_v.shape}')
+        else:
+            logger.info(f'x_v is None')
+        logger.info(f'static_features.shape: {static_features.shape}, x_s.shape: {x_s.shape}')
+        logger.info(f'chemo_iv.shape: {chemo_iv.shape}, x_chemo_iv: {x_chemo_iv.shape}')
+        logger.info(f'radio_iv.shape: {radio_iv.shape}, x_radio_iv: {x_radio_iv.shape}')
+
 
         # if active_encoder_br is None and encoder_r is None:  # Only self-attention
         for block in self.transformer_blocks:
@@ -172,25 +184,27 @@ class CT(EDCT):
             if self.self_positional_encoding is not None:
                 x_t = x_t + self.self_positional_encoding(x_t)
                 x_o = x_o + self.self_positional_encoding(x_o)
+                x_chemo_iv = x_chemo_iv + self.self_positional_encoding(x_chemo_iv)
+                x_radio_iv = x_radio_iv + self.self_positional_encoding(x_radio_iv)
                 x_v = x_v + self.self_positional_encoding(x_v) if self.has_vitals else None
 
             if self.has_vitals:
-                x_t, x_o, x_v = block((x_t, x_o, x_v), x_s, active_entries_treat_outcomes, active_entries_vitals)
+                x_t, x_o, x_chemo_iv, x_radio_iv, x_v = block((x_t, x_o, x_chemo_iv, x_radio_iv, x_v), x_s, active_entries_treat_outcomes, active_entries_vitals)
             else:
-                x_t, x_o = block((x_t, x_o), x_s, active_entries_treat_outcomes)
+                x_t, x_o, x_chemo_iv, x_radio_iv = block((x_t, x_o, x_chemo_iv, x_radio_iv), x_s, active_entries_treat_outcomes)
 
         if not self.has_vitals:
-            x = (x_o + x_t) / 2
+            x = (x_o + x_t + x_chemo_iv + x_radio_iv) / 4
         else:
             if fixed_split is not None:  # Test seq data
                 x = torch.empty_like(x_o)
                 for i in range(len(active_entries)):
                     # Masking vitals in range [fixed_split: ]
                     x[i, :int(fixed_split[i])] = \
-                        (x_o[i, :int(fixed_split[i])] + x_t[i, :int(fixed_split[i])] + x_v[i, :int(fixed_split[i])]) / 3
-                    x[i, int(fixed_split[i]):] = (x_o[i, int(fixed_split[i]):] + x_t[i, int(fixed_split[i]):]) / 2
+                        (x_o[i, :int(fixed_split[i])] + x_t[i, :int(fixed_split[i])] + x_chemo_iv[i, :int(fixed_split[i])] + x_radio_iv[i, :int(fixed_split[i])] + x_v[i, :int(fixed_split[i])]) / 5
+                    x[i, int(fixed_split[i]):] = (x_o[i, int(fixed_split[i]):] + x_t[i, int(fixed_split[i]):] + x_chemo_iv[i, int(fixed_split[i]):] + x_radio_iv[i, int(fixed_split[i]):]) / 4
             else:  # Train data always has vitals
-                x = (x_o + x_t + x_v) / 3
+                x = (x_o + x_t + x_chemo_iv + x_radio_iv + x_v) / 5
 
         output = self.output_dropout(x)
         br = self.br_treatment_outcome_head.build_br(output)

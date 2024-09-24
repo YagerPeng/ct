@@ -15,6 +15,7 @@ from pytorch_lightning import Trainer
 from torch_ema import ExponentialMovingAverage
 from typing import List
 from tqdm import tqdm
+import inspect
 
 from src.data import RealDatasetCollection, SyntheticDatasetCollection
 from src.models.utils import grad_reverse, BRTreatmentOutcomeHead, AlphaRise, bce
@@ -109,6 +110,7 @@ class TimeVaryingCausalModel(LightningModule):
         self.dim_vitals = args.model.dim_vitals
         self.dim_static_features = args.model.dim_static_features
         self.dim_outcome = args.model.dim_outcomes
+        self.dim_iv = args.model.dim_iv
 
         self.input_size = None  # Will be defined in subclasses
 
@@ -171,6 +173,7 @@ class TimeVaryingCausalModel(LightningModule):
         raise NotImplementedError()
 
     def get_autoregressive_predictions(self, dataset: Dataset) -> np.array:
+        logger.debug(f'get_autoregressive_predictions.......................................')
         logger.info(f'Autoregressive Prediction for {dataset.subset_name}.')
         if self.model_type == 'decoder':  # CRNDecoder / EDCTDecoder / RMSN Decoder
 
@@ -206,6 +209,7 @@ class TimeVaryingCausalModel(LightningModule):
         return bce_orig, bce_all
 
     def get_normalised_masked_rmse(self, dataset: Dataset, one_step_counterfactual=False):
+        logger.debug(f'get_normalised_masked_rmse............................')
         logger.info(f'RMSE calculation for {dataset.subset_name}.')
         outputs_scaled = self.get_predictions(dataset)
         unscale = self.hparams.exp.unscale_rmse
@@ -223,9 +227,11 @@ class TimeVaryingCausalModel(LightningModule):
 
         # Calculation like in original paper (Masked-Averaging over datapoints (& outputs) and then non-masked time axis)
         mse_orig = mse.sum(0).sum(-1) / dataset.data['active_entries'].sum(0).sum(-1)
-        mse_orig = mse_orig.mean()
+        mse_orig = mse_orig.mean() #mse_orig是个标量
         rmse_normalised_orig = np.sqrt(mse_orig) / dataset.norm_const
 
+        a=dataset.data['outputs']
+        logger.info(f'dataset.data[outputs] shape: {a.shape}, mse shape: {mse.shape}hhhhhhhhhhhh')
         # Masked averaging over all dimensions at once
         mse_all = mse.sum() / dataset.data['active_entries'].sum()
         rmse_normalised_all = np.sqrt(mse_all) / dataset.norm_const
@@ -244,6 +250,8 @@ class TimeVaryingCausalModel(LightningModule):
             else:
                 mse_last = ((outputs_scaled - dataset.data['outputs']) ** 2) * last_entries
 
+            b = dataset.data['outputs']
+            logger.info(f'mse_last:{mse_last.shape}, dataset.data: {b.shape}8888888888')
             mse_last = mse_last.sum() / last_entries.sum()
             rmse_normalised_last = np.sqrt(mse_last) / dataset.norm_const
 
@@ -255,9 +263,11 @@ class TimeVaryingCausalModel(LightningModule):
         return rmse_normalised_orig, rmse_normalised_all
 
     def get_normalised_n_step_rmses(self, dataset: Dataset, datasets_mc: List[Dataset] = None):
+        logger.debug(f'get_normalised_n_step_rmses........................................................')
         logger.info(f'RMSE calculation for {dataset.subset_name}.')
-        assert self.model_type == 'decoder' or self.model_type == 'multi' or self.model_type == 'g_net' or \
-               self.model_type == 'msm_regressor'
+        assert self.model_type == 'decoder' or self.model_type == 'multi' or self.model_type == 'iv_multi' or \
+               self.model_type == 'piv_multi' or \
+               self.model_type == 'new_iv_multi' or self.model_type == 'g_net' or self.model_type == 'msm_regressor'
         assert hasattr(dataset, 'data_processed_seq')
 
         unscale = self.hparams.exp.unscale_rmse
@@ -272,6 +282,9 @@ class TimeVaryingCausalModel(LightningModule):
                 * dataset.data_processed_seq['active_entries']
         else:
             mse = ((outputs_scaled - dataset.data_processed_seq['outputs']) ** 2) * dataset.data_processed_seq['active_entries']
+
+        a=dataset.data_processed_seq['outputs']
+        logger.info(f'dataset.data_processed_seq: {a.shape}999999999')
 
         nan_idx = np.unique(np.where(np.isnan(dataset.data_processed_seq['outputs']))[0])
         not_nan = np.array([i for i in range(outputs_scaled.shape[0]) if i not in nan_idx])
@@ -456,16 +469,25 @@ class BRCausalModel(TimeVaryingCausalModel):
             self.trainer.logger.filter_submodels = ['encoder', 'decoder']
 
     def training_step(self, batch, batch_ind, optimizer_idx=0):
+        logger.debug(f'go before print--------')
+        '''for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                logger.info(f'{key}: {value.shape}----------------')
+            else:
+                logger.info(f'{key}: type-> {type(value)}')
+        logger.info(f'go after print--------')'''
         for par in self.parameters():
             par.requires_grad = True
 
         if optimizer_idx == 0:  # grad reversal or domain confusion representation update
+            logger.debug(f'optimizer_idx: {optimizer_idx}-------------------------------')
             if self.hparams.exp.weights_ema:
                 with self.ema_treatment.average_parameters():
                     treatment_pred, outcome_pred, _ = self(batch)
             else:
                 treatment_pred, outcome_pred, _ = self(batch)
 
+            logger.debug(f'treatment_pred shape: {treatment_pred.shape}, outcome_pred shape: {outcome_pred.shape}')
             mse_loss = F.mse_loss(outcome_pred, batch['outputs'], reduce=False)
             if self.balancing == 'grad_reverse':
                 bce_loss = self.bce_loss(treatment_pred, batch['current_treatments'].double(), kind='predict')
@@ -475,10 +497,16 @@ class BRCausalModel(TimeVaryingCausalModel):
             else:
                 raise NotImplementedError()
 
+            logger.info(f'treatment_pred : {treatment_pred}1111----------------')
+            a = batch['current_treatments']
+            logger.info(f'current_treatments:{a}')
+
             # Masking for shorter sequences
             # Attention! Averaging across all the active entries (= sequence masks) for full batch
             bce_loss = (batch['active_entries'].squeeze(-1) * bce_loss).sum() / batch['active_entries'].sum()
             mse_loss = (batch['active_entries'] * mse_loss).sum() / batch['active_entries'].sum()
+
+            logging.debug(f'bce_loss shape: {bce_loss.shape}, mse_loss shape: {mse_loss.shape}~~~~~~~~~~~')
 
             loss = bce_loss + mse_loss
 
@@ -491,6 +519,7 @@ class BRCausalModel(TimeVaryingCausalModel):
             return loss
 
         elif optimizer_idx == 1:  # domain classifier update
+            logger.debug(f'optimizer_idx: {optimizer_idx}^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^')
             if self.hparams.exp.weights_ema:
                 with self.ema_non_treatment.average_parameters():
                     treatment_pred, _, _ = self(batch, detach_treatment=True)
@@ -501,6 +530,10 @@ class BRCausalModel(TimeVaryingCausalModel):
             if self.balancing == 'domain_confusion':
                 bce_loss = self.br_treatment_outcome_head.alpha * bce_loss
 
+            logger.info(f'treatment_pred : {treatment_pred}2222----------------')
+            a = batch['current_treatments']
+            logger.info(f'current_treatments:{a}^^^^^^^^^^^^^^^^^^^^')
+
             # Masking for shorter sequences
             # Attention! Averaging across all the active entries (= sequence masks) for full batch
             bce_loss = (batch['active_entries'].squeeze(-1) * bce_loss).sum() / batch['active_entries'].sum()
@@ -509,12 +542,20 @@ class BRCausalModel(TimeVaryingCausalModel):
             return bce_loss
 
     def test_step(self, batch, batch_ind, **kwargs):
+        logger.info(f'test_step callef in class: {self.__class__.__name__}')
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                logger.info(f'{key}: {value.shape}--------test_step-------')
+            else:
+                logger.info(f'{key}: type-> {type(value)}')
+        logger.info(f'test_step after print--------')
         if self.hparams.exp.weights_ema:
             with self.ema_non_treatment.average_parameters():
                 with self.ema_treatment.average_parameters():
                     treatment_pred, outcome_pred, _ = self(batch)
         else:
             treatment_pred, outcome_pred, _ = self(batch)
+        logger.info(f'treatment_pred shape: {treatment_pred.shape}, outcome_pred shape: {outcome_pred.shape}')
 
         if self.balancing == 'grad_reverse':
             bce_loss = self.bce_loss(treatment_pred, batch['current_treatments'].double(), kind='predict')
@@ -535,6 +576,13 @@ class BRCausalModel(TimeVaryingCausalModel):
         self.log(f'{self.model_type}_{subset_name}_mse_loss', mse_loss, on_epoch=True, on_step=False, sync_dist=True)
 
     def predict_step(self, batch, batch_idx, dataset_idx=None):
+        logger.info(f'predict_step callef in class: {self.__class__.__name__}')
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                logger.info(f'{key}: {value.shape}--------predict_step-------')
+            else:
+                logger.info(f'{key}: type-> {type(value)}')
+        logger.info(f'predict_step after print--------')
         """
         Generates normalised output predictions
         """
@@ -543,6 +591,7 @@ class BRCausalModel(TimeVaryingCausalModel):
                 _, outcome_pred, br = self(batch)
         else:
             _, outcome_pred, br = self(batch)
+        logger.info(f'predict_step return: outcome_pred shape :{outcome_pred.shape}')
         return outcome_pred.cpu(), br.cpu()
 
     def get_representations(self, dataset: Dataset) -> np.array:
@@ -557,4 +606,5 @@ class BRCausalModel(TimeVaryingCausalModel):
         # Creating Dataloader
         data_loader = DataLoader(dataset, batch_size=self.hparams.dataset.val_batch_size, shuffle=False)
         outcome_pred, _ = [torch.cat(arrs) for arrs in zip(*self.trainer.predict(self, data_loader))]
+        logger.info(f'get_predictions return : outcome_pred shape :{outcome_pred.shape}')
         return outcome_pred.numpy()

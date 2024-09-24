@@ -3,7 +3,7 @@ dataset:
   coeff: 1.0
 
 model:
-  multi:
+  piv_multi:
     optimizer:
       learning_rate: 0.001
     batch_size: 128
@@ -21,4 +21,4 @@ exp:
   beta: 0.99
   balancing: domain_confusion
   #max_epochs: 150
-  max_epochs: 5
+  max_epochs: 1

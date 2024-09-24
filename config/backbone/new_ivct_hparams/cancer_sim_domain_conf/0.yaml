@@ -1,6 +1,6 @@
 # @package _global_
 dataset:
-  coeff: 1.0
+  coeff: 0.0
 
 model:
   multi:
@@ -20,5 +20,4 @@ exp:
   alpha: 0.01
   beta: 0.99
   balancing: domain_confusion
-  #max_epochs: 150
-  max_epochs: 5
+  max_epochs: 150

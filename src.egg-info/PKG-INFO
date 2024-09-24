@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: src
+Version: 0.1.0
+Summary: Time-varying treatment effect estimation with transformers and contrastive learning
+Author: AI-in-Management
+License: MIT
+License-File: LICENSE

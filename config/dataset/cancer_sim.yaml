@@ -10,19 +10,28 @@ dataset:
     train: 10000
     val: 1000
     test: 1000
+    #train: 300
+    #val: 200
+    #test: 10
   window_size: 15                                       # Used for biased treatment assignment
   lag: 0                                                # Lag for treatment assignment window
   max_seq_length: 60                                    # Max length of time series
   projection_horizon: 5                                 # Range of tau-step-ahead prediction (tau = projection_horizon + 1)
   cf_seq_mode: sliding_treatment                        # sliding_treatment / random_trajectories
   val_batch_size: 512                                   # Batch size for evaluation
+  #val_batch_size: 1                                     # Batch size for evaluation
   treatment_mode: multiclass                            # multiclass / multilabel -- for RMSN
+  latent_confounder: True
+  latent_confounder_influence_ratio: 1
+  chemo_iv_influence_ratio: 1
+  radio_iv_influence_ratio: 1
 
 model:
   dim_treatments: 4
   dim_vitals: 0
   dim_static_features: 1
   dim_outcomes: 1
+  dim_iv: 1 #can only be 1 at the moment, because don't have procedure like treatments in process_data()
 
 exp:
   unscale_rmse: True
